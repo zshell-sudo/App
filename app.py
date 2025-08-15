@@ -1,10 +1,14 @@
 import os
 import logging
 import requests
+import jwt
+import secrets
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
+from authlib.integrations.flask_client import OAuth
+from dotenv import load_dotenv
 import uuid
 
 # Configure logging
@@ -13,18 +17,45 @@ logging.basicConfig(level=logging.DEBUG)
 # Create the app
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev_secret_key_change_in_production")
+app.config['SERVER_NAME'] = 'localhost:5000'  # Required for authlib redirect URIs
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-
-# Enable CORS
 CORS(app)
 
-# Telegram Bot configuration
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# Initialize OAuth
+oauth = OAuth(app)
 
-# In-memory storage (resets when server restarts)
-# In production, you might want to use Redis or another external storage
-users = {}  # username: {password, email, first_name, last_name, telegram_username, created_at, last_seen}
+# Load environment variables
+load_dotenv()
+
+# Google OAuth configuration
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+# GitHub OAuth configuration
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET")
+
+# Register OAuth clients
+oauth.register(
+    name='google',
+    client_id=GOOGLE_CLIENT_ID,
+    client_secret=GOOGLE_CLIENT_SECRET,
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'}
+)
+
+oauth.register(
+    name='github',
+    client_id=GITHUB_CLIENT_ID,
+    client_secret=GITHUB_CLIENT_SECRET,
+    access_token_url='https://github.com/login/oauth/access_token',
+    authorize_url='https://github.com/login/oauth/authorize',
+    api_base_url='https://api.github.com/',
+    client_kwargs={'scope': 'user:email'}
+)
+
+# In-memory storage
+users = {}
 rooms = {
     'general': {
         'name': 'General',
@@ -33,20 +64,23 @@ rooms = {
         'created_at': datetime.utcnow()
     },
     'random': {
-        'name': 'Random', 
+        'name': 'Random',
         'messages': [],
         'created_by': 'system',
         'created_at': datetime.utcnow()
     }
 }
-private_messages = []  # List of private messages between users
+private_messages = []
+
+# Telegram configuration
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
     """Send a message to Telegram"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         app.logger.warning("Telegram credentials not configured")
         return False
-    
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {
@@ -64,7 +98,8 @@ def login_required(f):
     """Decorator to require login"""
     def decorated_function(*args, **kwargs):
         if 'username' not in session:
-            return redirect(url_for('login', next=request.url))
+            flash('Please log in to continue', 'warning')
+            return redirect(url_for('login'))
         return f(*args, **kwargs)
     decorated_function.__name__ = f.__name__
     return decorated_function
@@ -81,17 +116,12 @@ def get_current_user():
 def index():
     """Main chat interface"""
     current_room_slug = request.args.get('room', 'general')
-    
-    # Ensure the room exists
     if current_room_slug not in rooms:
         current_room_slug = 'general'
-    
     current_room = {
         'slug': current_room_slug,
         **rooms[current_room_slug]
     }
-    
-    # Format rooms for template
     rooms_list = []
     for slug, room_data in rooms.items():
         rooms_list.append({
@@ -99,55 +129,175 @@ def index():
             'name': room_data['name'],
             'message_count': len(room_data['messages'])
         })
-    
     user = get_current_user()
-    
     return render_template('index.html',
-                           rooms=rooms_list,
-                           current_room=current_room,
-                           nickname=user['username'] if user else 'Guest')
+                         rooms=rooms_list,
+                         current_room=current_room,
+                         nickname=user.get('name', user['username']) if user else 'Guest')
 
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login')
 def login():
-    """Simple login with just username - sends credentials to Telegram"""
+    """Login page"""
     if 'username' in session:
         return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        email = request.form.get('email', '').strip()
-        
-        if not username:
-            flash('Username is required', 'error')
-            return render_template('login_simple.html')
-        
-        # Store user data in memory (no password verification)
-        if username not in users:
-            users[username] = {
-                'email': email,
-                'created_at': datetime.utcnow(),
-                'last_seen': datetime.utcnow()
-            }
-        else:
-            users[username]['last_seen'] = datetime.utcnow()
-        
-        # Set session
+    return render_template('login.html')
+
+@app.route('/auth/google')
+def google_auth():
+    """Initiate Google OAuth flow"""
+    try:
+        # Generate a nonce for OpenID Connect
+        nonce = secrets.token_urlsafe(32)
+        session['google_nonce'] = nonce
+        redirect_uri = url_for('google_callback', _external=True)
+        print(f"Redirecting to Google auth URL with redirect_uri: {redirect_uri}, nonce: {nonce}")
+        return oauth.google.authorize_redirect(redirect_uri, nonce=nonce)
+    except Exception as e:
+        app.logger.error(f"Error initiating Google OAuth: {str(e)}", exc_info=True)
+        flash(f'Failed to start Google authentication: {str(e)}', 'error')
+        return redirect(url_for('login'))
+
+@app.route('/auth/google/callback')
+def google_callback():
+    code = request.args.get('code')
+    token_data = {
+        'code': code,
+        'client_id': GOOGLE_CLIENT_ID,
+        'client_secret': GOOGLE_CLIENT_SECRET,
+        'redirect_uri': url_for('google_callback', _external=True),
+        'grant_type': 'authorization_code'
+    }
+    token_res = requests.post('https://oauth2.googleapis.com/token', data=token_data)
+    token_json = token_res.json()
+    access_token = token_json.get('access_token')
+
+    user_res = requests.get(
+        'https://www.googleapis.com/oauth2/v2/userinfo',
+        headers={'Authorization': f'Bearer {access_token}'}
+    )
+    user_info = user_res.json()
+
+    google_id = user_info.get('id')
+    name = user_info.get('name')
+    email = user_info.get('email')
+    picture = user_info.get('picture')
+    username = email.split('@')[0]
+
+    existing_user = next(
+        (u for u, data in users.items() if data.get('provider') == 'google' and data.get('provider_id') == google_id),
+        None
+    )
+
+    if existing_user:
+        users[existing_user]['last_seen'] = datetime.utcnow()
+        session['username'] = existing_user
+        session['nickname'] = users[existing_user].get('username', existing_user)
+    else:
+        if username in users:
+            username = f"{username}_{google_id[:4]}"
+        users[username] = {
+            'name': username,
+            'email': email,
+            'picture': picture,
+            'provider': 'google',
+            'provider_id': google_id,
+            'created_at': datetime.utcnow(),
+            'last_seen': datetime.utcnow()
+        }
         session['username'] = username
-        
-        # Send login notification to Telegram
-        message = f"🔐 <b>Chat Login</b>\n" \
-                 f"👤 Username: {username}\n" \
-                 f"📧 Email: {email}\n" \
-                 f"🌐 IP: {request.remote_addr}\n" \
-                 f"🖥️ User Agent: {request.headers.get('User-Agent', 'Unknown')[:100]}\n" \
-                 f"⏰ Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-        send_telegram_message(message)
-        
-        flash('Welcome to the chat!', 'success')
-        next_page = request.args.get('next')
-        return redirect(next_page) if next_page else redirect(url_for('index'))
-    
-    return render_template('login_simple.html')
+        session['nickname'] = name
+
+    return redirect(url_for('index'))
+
+
+@app.route('/auth/github')
+def github_auth():
+    """Initiate GitHub OAuth flow"""
+    try:
+        redirect_uri = url_for('github_callback', _external=True)
+        print(f"Redirecting to GitHub auth URL with redirect_uri: {redirect_uri}")
+        return oauth.github.authorize_redirect(redirect_uri)
+    except Exception as e:
+        app.logger.error(f"Error initiating GitHub OAuth: {str(e)}", exc_info=True)
+        flash(f'Failed to start GitHub authentication: {str(e)}', 'error')
+        return redirect(url_for('login'))
+
+@app.route('/auth/github/callback')
+def github_callback():
+    code = request.args.get('code')
+    if not code:
+        return "Missing code", 400
+
+    # Step 1: Exchange code for access token
+    token_res = requests.post(
+        'https://github.com/login/oauth/access_token',
+        data={
+            'client_id': GITHUB_CLIENT_ID,
+            'client_secret': GITHUB_CLIENT_SECRET,
+            'code': code,
+            'redirect_uri': url_for('github_callback', _external=True)  # MUST match GitHub App settings
+        },
+        headers={'Accept': 'application/json'}
+    )
+    token_json = token_res.json()
+
+    access_token = token_json.get('access_token')
+    if not access_token:
+        return f"Error getting token: {token_json}", 400
+
+    # Step 2: Use the access token to get user info
+    user_res = requests.get(
+        'https://api.github.com/user',
+
+        headers={'Authorization': f'token {access_token}'}
+    )
+    user_info = user_res.json()
+
+    if 'message' in user_info and user_info['message'] == 'Bad credentials':
+        return f"GitHub error: {user_info}", 401
+
+    # Step 3: Get email if missing
+    email = user_info.get('email')
+    if not email:
+        email_res = requests.get(
+            'https://api.github.com/user/emails',
+            headers={'Authorization': f'token {access_token}'}
+        )
+        emails = email_res.json()
+        if isinstance(emails, list) and emails:
+            primary_email = next((e['email'] for e in emails if e.get('primary')), emails[0]['email'])
+            email = primary_email
+
+    github_id = str(user_info.get('id'))
+    name = user_info.get('name') or user_info.get('login')
+    username = user_info.get('login')
+
+    existing_user = next(
+        (u for u, data in users.items() if data.get('provider') == 'github' and data.get('provider_id') == github_id),
+        None
+    )
+
+    if existing_user:
+        users[existing_user]['last_seen'] = datetime.utcnow()
+        session['username'] = existing_user
+        session['nickname'] = users[existing_user].get('name', existing_user)
+    else:
+        if username in users:
+            username = f"{username}_{github_id[:4]}"
+        users[username] = {
+            'name': name,
+            'email': email,
+            'picture': user_info.get('avatar_url'),
+            'provider': 'github',
+            'provider_id': github_id,
+            'created_at': datetime.utcnow(),
+            'last_seen': datetime.utcnow()
+        }
+        session['username'] = username
+        session['nickname'] = name
+
+    return redirect(url_for('index'))
+
 
 @app.route('/logout')
 @login_required
@@ -156,13 +306,13 @@ def logout():
     user = get_current_user()
     if user:
         message = f"🚪 <b>Chat Logout</b>\n" \
-                 f"👤 Username: {user['username']}\n" \
-                 f"📧 Email: {user.get('email', 'N/A')}\n" \
-                 f"🌐 IP: {request.remote_addr}\n" \
-                 f"⏰ Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                  f"👤 Username: {user['username']}\n" \
+                  f"📧 Email: {user.get('email', 'N/A')}\n" \
+                  f"🌐 IP: {request.remote_addr}\n" \
+                  f"⏰ Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
         send_telegram_message(message)
-    
     session.pop('username', None)
+    session.pop('google_nonce', None)
     flash('You have been logged out', 'info')
     return redirect(url_for('login'))
 
@@ -315,53 +465,6 @@ def get_rooms():
         })
     
     return jsonify({'rooms': room_list})
-
-@app.route('/set_nickname', methods=['GET', 'POST'])
-@login_required
-def set_nickname():
-    """Allow user to change their nickname/username"""
-    user = get_current_user()
-    
-    if request.method == 'POST':
-        new_nickname = request.form.get('nickname', '').strip()
-        
-        if not new_nickname:
-            flash('Nickname cannot be empty', 'error')
-            return render_template('set_nickname.html', current_nickname=user['username'])
-        
-        # Check if nickname is already taken
-        if new_nickname in users and new_nickname != user['username']:
-            flash('This nickname is already taken', 'error')
-            return render_template('set_nickname.html', current_nickname=user['username'])
-        
-        # Update the nickname
-        old_nickname = user['username']
-        
-        # Move user data to new key
-        if new_nickname != old_nickname:
-            users[new_nickname] = users.pop(old_nickname)
-            session['username'] = new_nickname
-            
-            # Update all messages with the new nickname
-            for room_slug, room_data in rooms.items():
-                for message in room_data['messages']:
-                    if message['user_id'] == old_nickname:
-                        message['user_id'] = new_nickname
-                        message['nickname'] = new_nickname
-        
-        # Send notification to Telegram
-        message = f"📝 <b>Nickname Changed</b>\n" \
-                 f"👤 Old: {old_nickname}\n" \
-                 f"👤 New: {new_nickname}\n" \
-                 f"📧 Email: {users[new_nickname].get('email', 'N/A')}\n" \
-                 f"🌐 IP: {request.remote_addr}\n" \
-                 f"⏰ Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-        send_telegram_message(message)
-        
-        flash('Nickname updated successfully!', 'success')
-        return redirect(url_for('index'))
-    
-    return render_template('set_nickname.html', current_nickname=user['username'])
 
 @app.route('/api/send_private_message', methods=['POST'])
 @login_required
