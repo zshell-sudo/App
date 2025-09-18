@@ -17,9 +17,10 @@ logging.basicConfig(level=logging.DEBUG)
 # Create the app
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev_secret_key_change_in_production")
-app.config['SERVER_NAME'] = 'localhost:5000'  # Required for authlib redirect URIs
+# Remove SERVER_NAME to allow flexible hosting
+# app.config['SERVER_NAME'] = 'localhost:5000'  # Not needed in Replit environment
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-CORS(app)
+CORS(app, origins=['*'], supports_credentials=True)
 
 # Initialize OAuth
 oauth = OAuth(app)

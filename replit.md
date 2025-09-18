@@ -53,8 +53,36 @@ Preferred communication style: Simple, everyday language.
 - **Flask** - Core web framework for Python
 - **Flask-CORS** - Cross-Origin Resource Sharing support
 - **Werkzeug** - WSGI utilities including ProxyFix middleware
+- **Authlib** - OAuth integration for Google and GitHub authentication
+- **Flask-SQLAlchemy** - Database ORM (configured for future use)
+- **psycopg2-binary** - PostgreSQL adapter for Python
 
 ## Infrastructure
-- **No external databases** - uses in-memory storage only
-- **No third-party APIs** - self-contained chat application
+- **In-memory storage** - currently uses Python dictionaries for rooms/messages
+- **PostgreSQL database** - available and configured for future persistence upgrades
+- **OAuth authentication** - supports Google and GitHub login
 - **Session management** through Flask's built-in session handling with configurable secret key
+- **Replit hosting** - configured for Replit proxy requirements with CORS enabled
+
+# Recent Changes (September 18, 2025)
+
+## Replit Environment Setup
+- Fixed syntax errors in pyproject.toml configuration
+- Installed Python 3.11 and all required dependencies 
+- Configured Flask app to work with Replit's proxy infrastructure
+- Removed SERVER_NAME restriction to allow flexible hosting
+- Set up proper workflow configuration running on port 5000
+- Configured deployment settings using Gunicorn for production
+
+## Database Configuration  
+- Added PostgreSQL database support (available but not yet integrated)
+- Configured SQLAlchemy with proper connection pooling
+- Database models exist in models.py for future migration from in-memory storage
+
+## Testing Status
+- ✅ Flask application starts successfully
+- ✅ Health endpoint returns proper JSON response
+- ✅ Authentication system redirects properly to login
+- ✅ OAuth configuration ready for Google/GitHub (requires API keys)
+- ✅ In-memory chat functionality preserved and working
+- ✅ Deployment configuration set up for production use
