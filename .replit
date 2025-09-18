@@ -1,4 +1,4 @@
-modules = ["web", "nodejs-20", "python-3.12"]
+modules = ["web", "nodejs-20", "python-3.11"]
 
 [nix]
 channel = "stable-25_05"
@@ -35,3 +35,4 @@ externalPort = 80
 
 [agent]
 integrations = ["python_log_in_with_replit==1.0.0", "styling_replit==1.0.0", "python_database==1.0.0"]
+expertMode = true
