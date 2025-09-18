@@ -2,7 +2,7 @@
 .env
 .env.local
 .env.production
-
+.env.example
 # Python
 __pycache__/
 *.py[cod]
@@ -25,6 +25,7 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.local/
 
 # Virtual environments
 venv/
@@ -60,3 +61,5 @@ replit.nix
 
 # Cache directories
 .cache/
+
+*.env.example
