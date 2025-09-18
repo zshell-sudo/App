@@ -6,10 +6,20 @@ import secrets
 from datetime import datetime
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import DeclarativeBase
 from werkzeug.middleware.proxy_fix import ProxyFix
 from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
 import uuid
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+# Initialize database
+db = SQLAlchemy(model_class=Base)
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -17,10 +27,19 @@ logging.basicConfig(level=logging.DEBUG)
 # Create the app
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev_secret_key_change_in_production")
+# Database configuration
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_recycle": 300,
+    "pool_pre_ping": True,
+}
 # Remove SERVER_NAME to allow flexible hosting
 # app.config['SERVER_NAME'] = 'localhost:5000'  # Not needed in Replit environment
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 CORS(app, origins=['*'], supports_credentials=True)
+
+# Initialize the database
+db.init_app(app)
 
 # Initialize OAuth
 oauth = OAuth(app)
@@ -534,4 +553,14 @@ def health():
     })
 
 if __name__ == '__main__':
+    # Create database tables if they don't exist (for future database usage)
+    with app.app_context():
+        try:
+            # Import models to register them with SQLAlchemy (when ready)
+            # import models  # Uncomment when models are updated for new db structure
+            db.create_all()
+            app.logger.info("Database initialized successfully")
+        except Exception as e:
+            app.logger.warning(f"Database initialization failed (using in-memory storage): {e}")
+    
     app.run(host='0.0.0.0', port=5000, debug=True)

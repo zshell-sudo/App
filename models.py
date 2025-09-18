@@ -1,12 +1,14 @@
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
-from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Integer, String, Boolean, DateTime, Text, ForeignKey
 
-# Initialize without app context
+
+# Import db from app will be done via app context
 db = None
 
-class User(UserMixin, db.Model):
+class User(UserMixin):
     __tablename__ = 'users'
     
     id = db.Column(db.Integer, primary_key=True)
